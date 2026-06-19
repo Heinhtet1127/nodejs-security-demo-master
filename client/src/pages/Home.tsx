@@ -12,6 +12,7 @@ type User = {
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [message, setMessage] = useState("");
+  const [users, setUsers] = useState<User[]>([]);
 
   useEffect(() => {
     async function loadMe() {
@@ -26,10 +27,24 @@ export default function Home() {
     loadMe();
   }, []);
 
-  function logout() {
-    localStorage.removeItem("token");
-    setUser(null);
-    setMessage("Logged out on client only");
+  async function handleFetchAllUsers() {
+    try {
+      const res = await api.get("/auth/users");
+      setUsers(res.data.users);
+    } catch {
+      setUsers([]);
+    }
+  }
+
+  async function logout() {
+    try {
+      await api.post("/auth/logout");
+      setUser(null);
+      setUsers([]);
+      setMessage("logout success");
+    } catch {
+      setMessage("logout failed");
+    }
   }
 
   return (
@@ -41,6 +56,17 @@ export default function Home() {
           <p>Logged in as: {user.name}</p>
           <p>Email: {user.email}</p>
           <p>Role: {user.role}</p>
+          <h1>Admin test</h1>
+          <button onClick={handleFetchAllUsers}>Get All users</button>
+          {users.length > 0 && (
+            <ul>
+              {users.map((item) => (
+                <li key={item._id || item.id || item.email}>
+                  {item.name} ({item.email}) - {item.role}
+                </li>
+              ))}
+            </ul>
+          )}
           <button onClick={logout}>Logout</button>
         </div>
       ) : (
