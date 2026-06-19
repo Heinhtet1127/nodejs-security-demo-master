@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
-import axios from "axios";
-
-const API_URL = import.meta.env.VITE_API_URL;
+import api from "../api";
 
 type User = {
   _id?: string;
@@ -16,18 +14,16 @@ export default function Home() {
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
+    async function loadMe() {
+      try {
+        const res = await api.get("/auth/me");
+        setUser(res.data);
+      } catch {
+        setUser(null);
+      }
+    }
 
-    if (!token) return;
-
-    axios
-      .get(`${API_URL}/auth/me`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      .then((res) => setUser(res.data))
-      .catch(() => setUser(null));
+    loadMe();
   }, []);
 
   function logout() {
