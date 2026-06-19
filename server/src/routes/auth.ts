@@ -1,8 +1,18 @@
-import express from "express";
+import bcrypt from "bcrypt";
+import express, { Response } from "express";
 import jwt from "jsonwebtoken";
+import { requireAccessAuth } from "../middleware/auth.js";
 import { User } from "../models/User.js";
+import {
+  clearAuthCookies,
+  requireCsrf,
+  setAuthCookies,
+} from "../utils/cookie.js";
+import { AuthenticatedRequest, AuthTokenPayload } from "../utils/types.js";
 
 const router = express.Router();
+
+const EXTRACT_SAFE_USER_SELECT_OPTIONS = "-password";
 
 // POST /api/auth/register
 router.post("/register", async (req, res) => {
@@ -15,10 +25,12 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ message: "User already exists" });
     }
 
+    const hashPassword = await bcrypt.hash(password, 10);
+
     const user = await User.create({
       name,
       email,
-      password,
+      password: hashPassword,
     });
 
     res.status(201).json({
@@ -43,28 +55,25 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // INTENTIONALLY INSECURE:
-    // Plain query with raw email and raw password comparison.
-    const user = await User.findOne({ email, password });
+    // only check with email which is correct
+    const user = await User.findOne({ email });
 
     if (!user) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    const token = jwt.sign(
-      {
-        userId: user._id,
-        role: user.role,
-      },
-      process.env.JWT_SECRET || "supersecretkey",
-      {
-        expiresIn: "7d",
-      },
-    );
+    const checkPassword = await bcrypt.compare(password, user.password);
+
+    if (!checkPassword) {
+      return res.status(401).json({
+        message: "Invalid email or password",
+      });
+    }
+
+    setAuthCookies(res, String(user._id), user.role);
 
     res.json({
       message: "Login success",
-      token,
       user: {
         id: user._id,
         name: user.name,
@@ -81,34 +90,70 @@ router.post("/login", async (req, res) => {
 });
 
 // GET /api/auth/me
-router.get("/me", async (req, res) => {
+router.get(
+  "/me",
+  requireAccessAuth,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const user = await User.findById(req.authUser?.userId).select(
+        EXTRACT_SAFE_USER_SELECT_OPTIONS,
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found",
+        });
+      }
+
+      return res.json(user);
+    } catch (error) {
+      res.status(401).json({
+        message: "Unauthorized",
+        error,
+      });
+    }
+  },
+);
+
+router.post("/refresh", requireCsrf, async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
+    const refreshToken = req.cookies?.["refresh_token"];
 
-    if (!authHeader?.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "No token" });
+    if (!refreshToken) {
+      return res.json(401).json({
+        message: "No refresh token",
+      });
     }
 
-    const token = authHeader.split(" ")[1];
+    const decodedUserInfo = jwt.verify(
+      refreshToken,
+      process.env.REFRESH_TOKEN_SECRET!,
+    ) as AuthTokenPayload;
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "supersecretkey",
-    ) as { userId: string; role: string };
-
-    const user = await User.findById(decoded.userId).select("-password");
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    if (decodedUserInfo.type !== "refresh") {
+      return res.json(401).json({
+        message: "Invalied refresh token type provided",
+      });
     }
 
-    res.json(user);
-  } catch (error) {
-    res.status(401).json({
-      message: "Unauthorized",
-      error,
+    setAuthCookies(res, decodedUserInfo.userId, decodedUserInfo.role);
+
+    return res.json({
+      message: "Token refreshed",
+    });
+  } catch {
+    return res.json(401).json({
+      message: "Refresh failed",
     });
   }
+});
+
+router.post("/logout", requireCsrf, (_req, res) => {
+  clearAuthCookies(res);
+
+  return res.json({
+    message: "logout success!!!",
+  });
 });
 
 export default router;
