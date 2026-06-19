@@ -1,13 +1,24 @@
 import bcrypt from "bcrypt";
 import express, { Response } from "express";
 import jwt from "jsonwebtoken";
-import { requireAccessAuth } from "../middleware/auth.js";
+import { requireAccessAuth, requiredRole } from "../middleware/auth.js";
 import { User } from "../models/User.js";
 import {
   clearAuthCookies,
   requireCsrf,
   setAuthCookies,
 } from "../utils/cookie.js";
+import {
+  clearFailedLoginAttempts,
+  isAccLocked,
+  registerFailedLoginAttemp,
+  validateBody,
+} from "../utils/helpers.js";
+import {
+  listUsersQuerySchema,
+  loginSchema,
+  registerSchema,
+} from "../utils/schema.js";
 import { AuthenticatedRequest, AuthTokenPayload } from "../utils/types.js";
 
 const router = express.Router();
@@ -15,7 +26,7 @@ const router = express.Router();
 const EXTRACT_SAFE_USER_SELECT_OPTIONS = "-password";
 
 // POST /api/auth/register
-router.post("/register", async (req, res) => {
+router.post("/register", validateBody(registerSchema), async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
@@ -51,7 +62,7 @@ router.post("/register", async (req, res) => {
 });
 
 // POST /api/auth/login
-router.post("/login", async (req, res) => {
+router.post("/login", validateBody(loginSchema), async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -62,13 +73,31 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
+    // check if user acc locked
+
+    if (isAccLocked(user)) {
+      return res.status(429).json({
+        message: "Too many login attempts. Please try again later",
+      });
+    }
+
     const checkPassword = await bcrypt.compare(password, user.password);
 
     if (!checkPassword) {
+      await registerFailedLoginAttemp(user);
+
+      if (isAccLocked(user)) {
+        return res.status(429).json({
+          message: "Too many login attempts. Please try again later",
+        });
+      }
+
       return res.status(401).json({
         message: "Invalid email or password",
       });
     }
+
+    await clearFailedLoginAttempts(user);
 
     setAuthCookies(res, String(user._id), user.role);
 
@@ -155,5 +184,46 @@ router.post("/logout", requireCsrf, (_req, res) => {
     message: "logout success!!!",
   });
 });
+
+router.get(
+  "/users",
+  requireAccessAuth,
+  requiredRole("admin"),
+  async (req, res) => {
+    try {
+      const parsedQuery = listUsersQuerySchema.safeParse(req.query);
+
+      if (!parsedQuery.success) {
+        return res.status(400).json({
+          message: "Invalid query filters",
+        });
+      }
+
+      const filters: Record<string, string> = {};
+
+      if (parsedQuery.data.role) {
+        filters.role = parsedQuery.data.role;
+      }
+
+      if (parsedQuery.data.name) {
+        filters.name = parsedQuery.data.name;
+      }
+
+      if (parsedQuery.data.email) {
+        filters.email = parsedQuery.data.email;
+      }
+
+      const extractUsersList = await User.find(filters).select(
+        EXTRACT_SAFE_USER_SELECT_OPTIONS,
+      );
+
+      return res.json({ users: extractUsersList });
+    } catch {
+      res.status(500).json({
+        message: "Failed to fetch users list",
+      });
+    }
+  },
+);
 
 export default router;
